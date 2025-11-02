@@ -1,4 +1,4 @@
-# 🔥 DarkForge GUI: AI Persona Forge & Content Pipeline 🔥
+DarkForge GUI: AI Persona Forge & Content Pipeline 
 
 **Empower Your Creative Workflow: Generate, Customize, and Export Virtual Influencers with Precision**
 
