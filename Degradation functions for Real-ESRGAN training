@@ -1,0 +1,192 @@
+"""Degradation functions for Real-ESRGAN training."""
+import math
+import random
+import numpy as np
+import cv2
+from scipy import ndimage
+from scipy.ndimage import gaussian_filter
+from scipy.signal import lfilter  # Fixed import - from scipy.signal
+from torchvision.transforms import functional as F  # Fixed import - replaced functional_tensor
+import torch  # Add for _pt tensor versions
+
+def circular_lowpass_kernel(cutoff, shape=(64, 64), pad_to=(0, 0)):
+    """2D circular lowpass filter kernel."""
+    rows, cols = shape
+    crow, ccol = rows // 2, cols // 2
+    x, y = np.ogrid[:rows, :cols]
+    radius = np.sqrt((x - crow)**2 + (y - ccol)**2)
+    kernel = (radius <= cutoff).astype(float)
+    kernel = cv2.resize(kernel, (cols + pad_to[1], rows + pad_to[0]), interpolation=cv2.INTER_LINEAR)
+    return kernel / kernel.sum()
+
+def random_mixed_kernels(target, kernel_list, scale_list, noise_levels, random_seed=None):
+    """Randomly generate mixed kernels and add noise.
+
+    Args:
+        target (ndarray): Target image.
+        kernel_list (list): List of kernel sizes.
+        scale_list (list): List of scale factors.
+        noise_levels (list): List of noise levels.
+        random_seed (int): Random seed for numpy.random.
+
+    Returns:
+        tuple: Degraded image and kernel.
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    random_kernel = random.choice(kernel_list)
+    random_scale = random.choice(scale_list)
+    random_noise = random.choice(noise_levels)
+
+    kernel_size = random_kernel
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    degraded = cv2.filter2D(target, -1, kernel)
+    degraded = cv2.resize(degraded, (target.shape[1] // random_scale, target.shape[0] // random_scale), interpolation=cv2.INTER_LINEAR)
+    degraded = cv2.resize(degraded, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_CUBIC)
+    degraded = degraded + random_noise * np.random.normal(0, 1, degraded.shape)
+    degraded = np.clip(degraded, 0, 255).astype(np.uint8)
+    return degraded, kernel
+
+def random_add_gaussian_noise(img, noise_multiplier):
+    """Add gaussian noise to an image.
+
+    Args:
+        img (ndarray): Input image.
+        noise_multiplier (float): Multiply noise to the standard deviation.
+
+    Returns:
+        ndarray: Noisy image.
+    """
+    noise = np.random.normal(0, noise_multiplier, img.shape)
+    noisy_img = img + noise
+    noisy_img = np.clip(noisy_img, 0, 255).astype(np.uint8)
+    return noisy_img
+
+def random_add_gaussian_noise_pt(img, noise_multiplier):
+    """Add gaussian noise to a PyTorch tensor image.
+
+    Args:
+        img (torch.Tensor): Input image tensor.
+        noise_multiplier (float): Multiply noise to the standard deviation.
+
+    Returns:
+        torch.Tensor: Noisy image tensor.
+    """
+    img = img.to('cuda' if torch.cuda.is_available() else 'cpu')
+    noise = torch.normal(0, noise_multiplier, size=img.shape, device=img.device)
+    noisy_img = img + noise
+    noisy_img = torch.clamp(noisy_img, 0, 255)
+    return noisy_img
+
+def random_mixed_kernels_for_gt(target, kernel_list, scale_list, noise_levels, random_seed=None):
+    """Randomly generate mixed kernels and add noise for GT.
+
+    Args:
+        target (ndarray): Target image.
+        kernel_list (list): List of kernel sizes.
+        scale_list (list): List of scale factors.
+        noise_levels (list): List of noise levels.
+        random_seed (int): Random seed for numpy.random.
+
+    Returns:
+        tuple: Degraded image and kernel.
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    random_kernel = random.choice(kernel_list)
+    random_scale = random.choice(scale_list)
+    random_noise = random.choice(noise_levels)
+
+    kernel_size = random_kernel
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    degraded = cv2.filter2D(target, -1, kernel)
+    degraded = cv2.resize(degraded, (target.shape[1] // random_scale, target.shape[0] // random_scale), interpolation=cv2.INTER_LINEAR)
+    degraded = cv2.resize(degraded, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_CUBIC)
+    degraded = degraded + random_noise * np.random.normal(0, 1, degraded.shape)
+    degraded = np.clip(degraded, 0, 255).astype(np.uint8)
+    return degraded, kernel
+
+def augment_rescale(img, random_scale):
+    """Adjust scale of image with random scale.
+
+    Args:
+        img (ndarray): Input image.
+        random_scale (float): Random scale.
+
+    Returns:
+        ndarray: Rescaled image.
+    """
+    h, w = img.shape[:2]
+    new_h, new_w = int(h * random_scale), int(w * random_scale)
+    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    return img
+
+def rgb_to_grayscale(img):
+    """Convert RGB image to grayscale.
+
+    Args:
+        img (ndarray): Input image.
+
+    Returns:
+        ndarray: Grayscale image.
+    """
+    gray = F.rgb_to_grayscale(img)  # Fixed - using F.rgb_to_grayscale
+    return gray
+
+def random_add_poisson_noise(img, random_lam):
+    """Add poisson noise to an image.
+
+    Args:
+        img (ndarray): Input image.
+        random_lam (float): Random lambda for poisson.
+
+    Returns:
+        ndarray: Noisy image.
+    """
+    img = img.astype(np.float64)
+    noisy_img = np.random.poisson(img / 255.0 * random_lam) / random_lam * 255.0
+    noisy_img = np.clip(noisy_img, 0, 255).astype(np.uint8)
+    return noisy_img
+
+def random_add_poisson_noise_pt(img, random_lam):
+    """Add poisson noise to a PyTorch tensor image.
+
+    Args:
+        img (torch.Tensor): Input image tensor.
+        random_lam (float): Random lambda for poisson.
+
+    Returns:
+        torch.Tensor: Noisy image tensor.
+    """
+    img = img.to('cuda' if torch.cuda.is_available() else 'cpu')
+    img_float = img / 255.0 * random_lam
+    noisy_img = torch.poisson(img_float) / random_lam * 255.0
+    noisy_img = torch.clamp(noisy_img, 0, 255)
+    return noisy_img
+
+def random_mixed_kernels_for_lq(target, kernel_list, scale_list, noise_levels, random_seed=None):
+    """Randomly generate mixed kernels and add noise for LQ.
+
+    Args:
+        target (ndarray): Target image.
+        kernel_list (list): List of kernel sizes.
+        scale_list (list): List of scale factors.
+        noise_levels (list): List of noise levels.
+        random_seed (int): Random seed for numpy.random.
+
+    Returns:
+        tuple: Degraded image and kernel.
+    """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    random_kernel = random.choice(kernel_list)
+    random_scale = random.choice(scale_list)
+    random_noise = random.choice(noise_levels)
+
+    kernel_size = random_kernel
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    degraded = cv2.filter2D(target, -1, kernel)
+    degraded = cv2.resize(degraded, (target.shape[1] // random_scale, target.shape[0] // random_scale), interpolation=cv2.INTER_LINEAR)
+    degraded = cv2.resize(degraded, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_CUBIC)
+    degraded = degraded + random_noise * np.random.normal(0, 1, degraded.shape)
+    degraded
